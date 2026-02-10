@@ -4,28 +4,22 @@ import re
 from datetime import datetime
 import io
 
-# Setup page
-st.set_page_config(page_title="BSNL Polisher", layout="centered")
-st.title("📱 BSNL Link Outage Web-App")
-
-# Reset Functionality
-if 'count' not in st.session_state:
-    st.session_state.count = 0
+st.set_page_config(page_title="BSNL Monthly Polisher", layout="centered")
+st.title("📱 BSNL Link Outage App")
 
 def format_duration(seconds):
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
     return f"{int(h):02}:{int(m):02}:{int(s):02}"
 
-# 1. Clear Button to fix the "2nd upload" issue
-if st.button("🔄 Clear App Memory"):
+# Reset App Button
+if st.button("🔄 Clear & Restart"):
     st.cache_data.clear()
     st.rerun()
 
-uploaded_file = st.file_uploader("Upload BSNL raw file", type=['xlsx', 'csv'])
+uploaded_file = st.file_uploader("Upload BSNL Status File", type=['xlsx', 'csv'])
 
 if uploaded_file:
-    # 2. Logic to handle both Excel and CSV correctly
     if uploaded_file.name.endswith('.csv'):
         content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
         lines = content.splitlines()
@@ -48,28 +42,24 @@ if uploaded_file:
                 evt_no, date_str, time_str, info, obj = match.groups()
                 info_clean = info.strip()
                 if info_clean in ["Link Down", "Cleared Link Down"]:
-                    dt_obj = pd.to_datetime(f"{date_str} {time_str}", format='mixed', dayfirst=False)
-                    records.append({
-                        'Event Number': int(evt_no), 
-                        'Date': date_str, 
-                        'Time': time_str, 
-                        'Information': info_clean, 
-                        'Object': obj.strip(), 
-                        'dt': dt_obj, 
-                        'MonthYear': dt_obj.strftime('%B %Y')
-                    })
+                    dt_obj = pd.to_datetime(f"{date_str} {time_str}", dayfirst=False, errors='coerce')
+                    if pd.notnull(dt_obj):
+                        records.append({
+                            'Event Number': int(evt_no), 'Date': date_str, 'Time': time_str,
+                            'Information': info_clean, 'Object': obj.strip(),
+                            'dt': dt_obj, 'MonthYear': dt_obj.strftime('%B %Y')
+                        })
         
         full_df = pd.DataFrame(records)
-        
         if not full_df.empty:
-            # 3. Proper Month Selection
+            # --- MONTH SELECTION ---
             months = sorted(full_df['MonthYear'].unique(), key=lambda x: datetime.strptime(x, '%B %Y'), reverse=True)
-            selected_month = st.selectbox("📅 Select Month:", months)
+            selected_month = st.selectbox("📅 Select Month to Extract:", months)
             
-            if st.button("🚀 Generate & Download"):
+            if st.button("🚀 Generate Polished Report"):
                 df_month = full_df[full_df['MonthYear'] == selected_month].copy()
                 
-                # Sort and remove repeated states (Down-Down or Clear-Clear)
+                # Filter Redundancy (State Transition)
                 df_month = df_month.sort_values(['Object', 'dt'], ascending=True)
                 df_month['prev_info'] = df_month.groupby('Object')['Information'].shift(1)
                 df_filtered = df_month[df_month['Information'] != df_month['prev_info']].copy()
@@ -77,7 +67,7 @@ if uploaded_file:
                 final_list = []
                 total_sec = 0
                 
-                # 4. Correct Pairing Logic per Object
+                # Pairing Engine
                 for obj_name, group in df_filtered.groupby('Object'):
                     group = group.sort_values('dt', ascending=False)
                     i = 0
@@ -93,26 +83,26 @@ if uploaded_file:
                         else:
                             row['Outage Hours'] = ""; final_list.append(row); i += 1
                 
-                # Final Table Assembly
+                # Assembly
                 final_df = pd.DataFrame(final_list).sort_values('Event Number', ascending=False)
                 final_df.insert(0, 'Sr. No', range(1, len(final_df) + 1))
-                
                 cols = ['Sr. No', 'Event Number', 'Date', 'Time', 'Information', 'Object', 'Outage Hours']
                 final_df = final_df[cols]
                 
-                # TOTAL ROW
-                summary = pd.DataFrame([["", "", "", "", "", "TOTAL OUTAGE HOURS:", format_duration(total_sec)]], columns=cols)
+                # Summary Row
+                total_str = format_duration(total_sec)
+                summary = pd.DataFrame([["", "", "", "", "", "TOTAL OUTAGE HOURS:", total_str]], columns=cols)
                 final_df = pd.concat([final_df, summary], ignore_index=True)
 
-                # Export
+                st.success(f"Report for {selected_month} ready!")
+                
+                # Export to Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     final_df.to_excel(writer, index=False)
-                
-                st.success(f"Report for {selected_month} is ready!")
                 st.download_button("📥 Download Excel", data=output.getvalue(), file_name=f"BSNL_Report_{selected_month}.xlsx")
         else:
-            st.warning("No Link Down/Clear data found.")
+            st.warning("No Link data found in this file.")
     else:
-        st.error("Header not found in file.")
+        st.error("Could not find the system log header.")
         
